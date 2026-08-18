@@ -19,6 +19,14 @@ def _int(name: str, default: int) -> int:
         return default
 
 
+def _env_first(names: tuple[str, ...], default: str = "") -> str:
+    for name in names:
+        value = os.getenv(name, "").strip()
+        if value:
+            return value
+    return default
+
+
 @dataclass(frozen=True)
 class Config:
     data_dir: Path
@@ -43,6 +51,9 @@ class Config:
 
     @classmethod
     def from_env(cls) -> "Config":
+        mongo_uri = _env_first(("MONGO_URI",))
+        if mongo_uri and "://" not in mongo_uri:
+            mongo_uri = f"mongodb://{mongo_uri}"
         return cls(
             data_dir=Path(os.getenv("DATA_DIR", "/data")),
             search_command=os.getenv("PAPER_SEARCH_COMMAND", "paper-search"),
@@ -58,11 +69,14 @@ class Config:
             fetch_fulltext=_bool("FETCH_FULLTEXT", True),
             max_fulltext_chars=max(4000, _int("MAX_FULLTEXT_CHARS", 28000)),
             keep_fulltext=_bool("KEEP_FULLTEXT", False),
-            llm_base_url=os.getenv("LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/"),
-            llm_api_key=os.getenv("LLM_API_KEY", ""),
-            llm_model=os.getenv("LLM_MODEL", "gpt-4.1-mini"),
+            llm_base_url=_env_first(
+                ("LLM_BASE_URL", "TRADINGAGENTS_LLM_BACKEND_URL"),
+                "https://api.openai.com/v1",
+            ).rstrip("/"),
+            llm_api_key=_env_first(("LLM_API_KEY", "NVIDIA_API_KEY")),
+            llm_model=_env_first(("LLM_MODEL", "TRADINGAGENTS_DEEP_THINK_LLM"), "gpt-4.1-mini"),
             llm_timeout_seconds=max(30, _int("LLM_TIMEOUT_SECONDS", 120)),
-            mongo_uri=os.getenv("MONGO_URI", "").strip(),
+            mongo_uri=mongo_uri,
             mongo_database=os.getenv("MONGO_DATABASE", "interesting_papers").strip() or "interesting_papers",
             mongo_server_selection_timeout_ms=max(1000, _int("MONGO_SERVER_SELECTION_TIMEOUT_MS", 10000)),
             mongo_run_retention_days=max(0, _int("MONGO_RUN_RETENTION_DAYS", 365)),

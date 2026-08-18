@@ -4,6 +4,7 @@ from tempfile import TemporaryDirectory
 from pathlib import Path
 import sys
 import types
+import os
 from unittest.mock import patch
 
 from app.config import Config
@@ -14,6 +15,19 @@ UTC = timezone.utc
 
 
 class PipelineTests(unittest.TestCase):
+    def test_config_accepts_tradingagents_aliases_and_normalizes_mongo_host(self):
+        with patch.dict(os.environ, {
+            "MONGO_URI": "192.168.1.26:27017",
+            "TRADINGAGENTS_LLM_BACKEND_URL": "https://integrate.api.nvidia.com/v1",
+            "TRADINGAGENTS_DEEP_THINK_LLM": "nvidia/test-model",
+            "NVIDIA_API_KEY": "test-key",
+        }, clear=True):
+            config = Config.from_env()
+        self.assertEqual(config.mongo_uri, "mongodb://192.168.1.26:27017")
+        self.assertEqual(config.llm_base_url, "https://integrate.api.nvidia.com/v1")
+        self.assertEqual(config.llm_model, "nvidia/test-model")
+        self.assertEqual(config.llm_api_key, "test-key")
+
     def test_canonical_key_prefers_doi(self):
         paper = canonicalize({"title": "A paper", "doi": "10.1234/ABC", "published_date": "2026-08-17"}, "Bitcoin")
         self.assertEqual(paper["key"], "doi:10.1234/abc")
