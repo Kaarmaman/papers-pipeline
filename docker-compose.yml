@@ -1,0 +1,68 @@
+services:
+  papers-worker:
+    build:
+      context: .
+    image: interesting-papers:0.1.0
+    restart: unless-stopped
+    command: ["python", "-m", "app.pipeline", "--loop"]
+    environment:
+      DATA_DIR: /data
+      PAPER_SEARCH_SOURCES: ${PAPER_SEARCH_SOURCES:-crossref,openalex,semantic,arxiv,ssrn,zenodo,hal}
+      MAX_RESULTS_PER_SOURCE: ${MAX_RESULTS_PER_SOURCE:-8}
+      SEARCH_TIMEOUT_SECONDS: ${SEARCH_TIMEOUT_SECONDS:-180}
+      LOOKBACK_DAYS: ${LOOKBACK_DAYS:-30}
+      CHECK_INTERVAL_HOURS: ${CHECK_INTERVAL_HOURS:-168}
+      RUN_ON_STARTUP: ${RUN_ON_STARTUP:-true}
+      FETCH_FULLTEXT: ${FETCH_FULLTEXT:-true}
+      MAX_FULLTEXT_CHARS: ${MAX_FULLTEXT_CHARS:-28000}
+      KEEP_FULLTEXT: ${KEEP_FULLTEXT:-false}
+      MONGO_URI: ${MONGO_URI:-}
+      MONGO_DATABASE: ${MONGO_DATABASE:-interesting_papers}
+      MONGO_SERVER_SELECTION_TIMEOUT_MS: ${MONGO_SERVER_SELECTION_TIMEOUT_MS:-10000}
+      MONGO_RUN_RETENTION_DAYS: ${MONGO_RUN_RETENTION_DAYS:-365}
+      PAPER_SEARCH_MCP_UNPAYWALL_EMAIL: ${PAPER_SEARCH_MCP_UNPAYWALL_EMAIL:-}
+      PAPER_SEARCH_MCP_CORE_API_KEY: ${PAPER_SEARCH_MCP_CORE_API_KEY:-}
+      PAPER_SEARCH_MCP_SEMANTIC_SCHOLAR_API_KEY: ${PAPER_SEARCH_MCP_SEMANTIC_SCHOLAR_API_KEY:-}
+      PAPER_SEARCH_MCP_GOOGLE_SCHOLAR_PROXY_URL: ${PAPER_SEARCH_MCP_GOOGLE_SCHOLAR_PROXY_URL:-}
+      PAPER_SEARCH_MCP_DOAJ_API_KEY: ${PAPER_SEARCH_MCP_DOAJ_API_KEY:-}
+      PAPER_SEARCH_MCP_ZENODO_ACCESS_TOKEN: ${PAPER_SEARCH_MCP_ZENODO_ACCESS_TOKEN:-}
+      PAPER_SEARCH_MCP_IEEE_API_KEY: ${PAPER_SEARCH_MCP_IEEE_API_KEY:-}
+      PAPER_SEARCH_MCP_ACM_API_KEY: ${PAPER_SEARCH_MCP_ACM_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-gpt-4.1-mini}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-120}
+    volumes:
+      - papers-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.pipeline", "--healthcheck"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  papers-web:
+    build:
+      context: .
+    image: interesting-papers:0.1.0
+    restart: unless-stopped
+    command: ["python", "-m", "app.web"]
+    environment:
+      DATA_DIR: /data
+      PORT: ${PAPER_PORT:-8099}
+    ports:
+      - "${PAPER_PORT:-8099}:8099"
+    volumes:
+      - papers-data:/data:ro
+    depends_on:
+      - papers-worker
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8099/healthz', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  papers-data:
+    name: interesting-papers-data
