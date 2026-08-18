@@ -1,4 +1,5 @@
 import unittest
+import json
 from datetime import datetime, timezone
 from tempfile import TemporaryDirectory
 from pathlib import Path
@@ -8,7 +9,7 @@ import os
 from unittest.mock import patch
 
 from app.config import Config
-from app.pipeline import canonicalize, merge_papers, run_once, score_paper, SearchResult
+from app.pipeline import canonicalize, merge_papers, notify_discord, run_once, score_paper, SearchResult
 
 
 UTC = timezone.utc
@@ -21,12 +22,55 @@ class PipelineTests(unittest.TestCase):
             "LLM_BASE_URL": "https://integrate.api.nvidia.com/v1",
             "LLM_MODEL": "nvidia/test-model",
             "LLM_API_KEY": "test-key",
+            "DISCORD_WEBHOOK_URL": "https://discord.example/webhook",
+            "PAPER_REPORT_URL": "http://192.168.1.26:8099/",
         }, clear=True):
             config = Config.from_env()
         self.assertEqual(config.mongo_uri, "mongodb://192.168.1.26:27017")
         self.assertEqual(config.llm_base_url, "https://integrate.api.nvidia.com/v1")
         self.assertEqual(config.llm_model, "nvidia/test-model")
         self.assertEqual(config.llm_api_key, "test-key")
+        self.assertEqual(config.discord_webhook_url, "https://discord.example/webhook")
+        self.assertEqual(config.paper_report_url, "http://192.168.1.26:8099/")
+
+    def test_discord_notification_contains_top_five_and_does_not_fail_run(self):
+        config = Config(
+            data_dir=Path("."), search_command="unused", search_sources="crossref",
+            max_results_per_source=1, search_timeout_seconds=30, lookback_days=30,
+            check_interval_hours=168, run_on_startup=True, fetch_fulltext=False,
+            max_fulltext_chars=4000, llm_base_url="https://example.invalid/v1",
+            llm_api_key="", llm_model="test", llm_timeout_seconds=30,
+            discord_webhook_url="https://discord.example/webhook",
+            paper_report_url="http://192.168.1.26:8099/",
+        )
+        captured = {}
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        def fake_urlopen(request, timeout):
+            captured["url"] = request.full_url
+            captured["timeout"] = timeout
+            captured["payload"] = json.loads(request.data.decode("utf-8"))
+            return Response()
+
+        report = {
+            "success": True,
+            "paper_count": 1,
+            "checked_at": "2026-08-18T00:00:00Z",
+            "top5": [{"paper": {"title": "A paper", "relevance_score": 91, "doi": "10/example"}}],
+        }
+        with patch("app.pipeline.urllib.request.urlopen", side_effect=fake_urlopen):
+            notify_discord(config, report)
+        self.assertEqual(captured["url"], "https://discord.example/webhook")
+        self.assertEqual(captured["timeout"], 15)
+        self.assertIn("A paper", captured["payload"]["content"])
+        self.assertIn("http://192.168.1.26:8099/", captured["payload"]["content"])
+        self.assertEqual(captured["payload"]["allowed_mentions"], {"parse": []})
 
     def test_canonical_key_prefers_doi(self):
         paper = canonicalize({"title": "A paper", "doi": "10.1234/ABC", "published_date": "2026-08-17"}, "Bitcoin")

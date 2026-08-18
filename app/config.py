@@ -48,6 +48,8 @@ class Config:
     mongo_server_selection_timeout_ms: int = 10000
     mongo_run_retention_days: int = 365
     keep_fulltext: bool = False
+    discord_webhook_url: str = ""
+    paper_report_url: str = ""
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -77,6 +79,8 @@ class Config:
             mongo_database=os.getenv("MONGO_DATABASE", "interesting_papers").strip() or "interesting_papers",
             mongo_server_selection_timeout_ms=max(1000, _int("MONGO_SERVER_SELECTION_TIMEOUT_MS", 10000)),
             mongo_run_retention_days=max(0, _int("MONGO_RUN_RETENTION_DAYS", 365)),
+            discord_webhook_url=_env_first(("DISCORD_WEBHOOK_URL",)),
+            paper_report_url=_env_first(("PAPER_REPORT_URL",)),
         )
 
     @property

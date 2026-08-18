@@ -347,6 +347,38 @@ def link_for(paper: dict[str, Any]) -> str:
     return paper.get("url") or (f"https://doi.org/{paper['doi']}" if paper.get("doi") else "")
 
 
+def notify_discord(config: Config, report: dict[str, Any]) -> None:
+    if not config.discord_webhook_url or not report.get("success") or not report.get("paper_count"):
+        return
+    lines = [
+        f"**Interesting papers to read: {report['paper_count']} new paper(s)**",
+        f"Checked: {report.get('checked_at', 'unknown')}",
+    ]
+    for index, item in enumerate(report.get("top5", [])[:5], start=1):
+        paper = item.get("paper", {})
+        title = clean_text(paper.get("title") or "Untitled paper").replace("\n", " ")[:180]
+        score = paper.get("relevance_score", 0)
+        link = link_for(paper)
+        lines.append(f"{index}. **{title}** — {score}/100" + (f" <{link}>" if link else ""))
+    if config.paper_report_url:
+        lines.append(f"Report: {config.paper_report_url}")
+    content = "\n".join(lines)
+    if len(content) > 1900:
+        content = content[:1890].rstrip() + "…"
+    request = urllib.request.Request(
+        config.discord_webhook_url,
+        data=json.dumps({"content": content, "allowed_mentions": {"parse": []}}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15):
+            pass
+        print(json.dumps({"event": "discord_notification_sent", "papers": report["paper_count"]}), flush=True)
+    except (OSError, urllib.error.URLError, ValueError) as exc:
+        print(json.dumps({"event": "discord_notification_failed", "error": type(exc).__name__}), flush=True)
+
+
 def render_html(report: dict[str, Any]) -> str:
     def esc(value: Any) -> str:
         return html.escape(clean_text(value))
@@ -453,6 +485,7 @@ def run_once(config: Config) -> dict[str, Any]:
     write_reports(config, report)
     store.save_run(iso(started_at), iso(finished_at), iso(cutoff), success, len(papers), errors)
     store.close()
+    notify_discord(config, report)
     print(json.dumps({"event": "run_finished", "at": iso(finished_at), "papers": len(papers), "success": success}), flush=True)
     return report
 
