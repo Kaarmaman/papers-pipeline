@@ -15,12 +15,12 @@ UTC = timezone.utc
 
 
 class PipelineTests(unittest.TestCase):
-    def test_config_accepts_tradingagents_aliases_and_normalizes_mongo_host(self):
+    def test_config_accepts_neutral_llm_settings_and_normalizes_mongo_host(self):
         with patch.dict(os.environ, {
             "MONGO_URI": "192.168.1.26:27017",
-            "TRADINGAGENTS_LLM_BACKEND_URL": "https://integrate.api.nvidia.com/v1",
-            "TRADINGAGENTS_DEEP_THINK_LLM": "nvidia/test-model",
-            "NVIDIA_API_KEY": "test-key",
+            "LLM_BASE_URL": "https://integrate.api.nvidia.com/v1",
+            "LLM_MODEL": "nvidia/test-model",
+            "LLM_API_KEY": "test-key",
         }, clear=True):
             config = Config.from_env()
         self.assertEqual(config.mongo_uri, "mongodb://192.168.1.26:27017")
