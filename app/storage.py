@@ -107,6 +107,12 @@ class MongoStore:
             document["expires_at"] = finished_at + timedelta(days=retention)
         self.runs.insert_one(document)
 
+    def reset(self) -> dict[str, int]:
+        return {
+            name: getattr(self, name).delete_many({}).deleted_count
+            for name in ("state", "papers", "runs")
+        }
+
     def close(self) -> None:
         client = getattr(self, "client", None)
         if client is not None:
