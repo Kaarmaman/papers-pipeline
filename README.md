@@ -56,3 +56,17 @@ For a one-off run inside a started stack:
 ```bash
 docker compose run --rm papers-worker python -m app.pipeline --once
 ```
+
+### Full reset and fresh run
+
+A normal Portainer restart preserves MongoDB and the named `interesting-papers-data` volume. For an intentional full clean, run this command in a one-shot worker using the same stack environment, MongoDB URI, and `/data` volume:
+
+```bash
+python -m app.pipeline --reset-and-run --confirm-reset --lookback-days 365
+```
+
+The command clears documents from `state`, `papers`, and `runs`, removes stale `latest.html`/`latest.json` reports, then runs one fresh search. It prints deleted-document counts and filter rejection counts. `--confirm-reset` is required.
+
+With Docker Compose, use `docker compose run --rm papers-worker ...`. In Portainer, stop or scale `papers-worker` to zero first, then duplicate it as a temporary container with restart policy `no`, change its command to the reset command, and keep the same environment and volume. Never leave `--reset-and-run` under `restart: unless-stopped`: every restart would erase data again. Restore the normal `--loop` worker after the one-shot exits successfully.
+
+The report is available at `http://<docker-host>:8099/`. It serves the latest generated run, not a live MongoDB query; the page may return `503` briefly while the fresh report is being generated.

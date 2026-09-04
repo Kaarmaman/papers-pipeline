@@ -12,7 +12,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -159,17 +159,27 @@ def canonicalize(raw: dict[str, Any], topic: str) -> dict[str, Any]:
     return paper
 
 
-def merge_papers(results: Iterable[SearchResult], cutoff: datetime, latest: datetime) -> tuple[list[dict[str, Any]], int]:
+def merge_papers(
+    results: Iterable[SearchResult],
+    cutoff: datetime,
+    latest: datetime,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
     merged: dict[str, dict[str, Any]] = {}
-    excluded_missing_date = 0
+    rejection_counts = {"missing_date": 0, "before_cutoff": 0, "future_date": 0}
     for result in results:
         raw = result.payload
         if not isinstance(raw, dict):
             continue
         paper = canonicalize(raw, result.topic)
         published = parse_date(paper["published_date"])
-        if not published or published <= cutoff or published > latest + timedelta(days=2):
-            excluded_missing_date += int(not published)
+        if not published:
+            rejection_counts["missing_date"] += 1
+            continue
+        if published <= cutoff:
+            rejection_counts["before_cutoff"] += 1
+            continue
+        if published > latest + timedelta(days=2):
+            rejection_counts["future_date"] += 1
             continue
         key = paper["key"]
         existing = merged.get(key)
@@ -181,7 +191,7 @@ def merge_papers(results: Iterable[SearchResult], cutoff: datetime, latest: date
         for field in ("abstract", "url", "doi", "paper_id", "authors", "published_date"):
             if not existing.get(field) and paper.get(field):
                 existing[field] = paper[field]
-    return list(merged.values()), excluded_missing_date
+    return list(merged.values()), rejection_counts
 
 
 def _match_count(text: str, terms: Iterable[str]) -> int:
@@ -427,20 +437,47 @@ def render_html(report: dict[str, Any]) -> str:
     )
 
 
+REPORT_NAMES = ("latest.json", "latest.html")
+
+
 def write_reports(config: Config, report: dict[str, Any]) -> None:
     config.report_dir.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(report, ensure_ascii=False, indent=2)
     page = render_html(report)
-    for name, content in (("latest.json", payload), ("latest.html", page)):
+    for name, content in zip(REPORT_NAMES, (payload, page)):
         temporary = config.report_dir / f".{name}.tmp"
         temporary.write_text(content, encoding="utf-8")
         os.replace(temporary, config.report_dir / name)
 
 
+def clear_reports(config: Config) -> None:
+    for name in REPORT_NAMES:
+        (config.report_dir / name).unlink(missing_ok=True)
+        (config.report_dir / f".{name}.tmp").unlink(missing_ok=True)
+
+
+def reset_and_run(config: Config) -> dict[str, Any]:
+    clear_reports(config)
+    store = Store(config)
+    try:
+        counts = store.reset()
+        print(json.dumps({"event": "reset_completed", **counts}), flush=True)
+        return _run_once(config, store)
+    finally:
+        store.close()
+
+
 def run_once(config: Config) -> dict[str, Any]:
+    store = Store(config)
+    try:
+        return _run_once(config, store)
+    finally:
+        store.close()
+
+
+def _run_once(config: Config, store: MongoStore) -> dict[str, Any]:
     started_at = now_utc()
     print(json.dumps({"event": "run_started", "at": iso(started_at), "sources": config.search_sources}), flush=True)
-    store = Store(config)
     last_success = parse_date(store.get_state("last_success_at"))
     cutoff = last_success or (started_at - timedelta(days=config.lookback_days))
     search_results: list[SearchResult] = []
@@ -451,7 +488,8 @@ def run_once(config: Config) -> dict[str, Any]:
             errors[topic["name"]] = error
         search_results.extend(SearchResult(topic["name"], paper) for paper in papers)
         print(json.dumps({"event": "topic_search", "topic": topic["name"], "results": len(papers), "ok": error is None}), flush=True)
-    papers, excluded_missing_date = merge_papers(search_results, cutoff, started_at)
+    papers, rejection_counts = merge_papers(search_results, cutoff, started_at)
+    print(json.dumps({"event": "filter_summary", "cutoff": iso(cutoff), "accepted": len(papers), **rejection_counts}), flush=True)
     papers = sort_papers(papers, started_at)
     for paper in papers:
         paper["fulltext_available"] = False
@@ -473,7 +511,9 @@ def run_once(config: Config) -> dict[str, Any]:
         "checked_at": iso(finished_at),
         "cutoff_at": iso(cutoff),
         "paper_count": len(papers),
-        "excluded_missing_date": excluded_missing_date,
+        "excluded_missing_date": rejection_counts["missing_date"],
+        "excluded_before_cutoff": rejection_counts["before_cutoff"],
+        "excluded_future_date": rejection_counts["future_date"],
         "success": success,
         "errors": errors,
         "papers": papers,
@@ -484,7 +524,6 @@ def run_once(config: Config) -> dict[str, Any]:
     }
     write_reports(config, report)
     store.save_run(iso(started_at), iso(finished_at), iso(cutoff), success, len(papers), errors)
-    store.close()
     notify_discord(config, report)
     print(json.dumps({"event": "run_finished", "at": iso(finished_at), "papers": len(papers), "success": success}), flush=True)
     return report
@@ -499,24 +538,46 @@ def healthcheck(config: Config) -> int:
     return 0
 
 
+def positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be an integer") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be greater than zero")
+    return parsed
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--loop", action="store_true")
     parser.add_argument("--healthcheck", action="store_true")
+    parser.add_argument("--reset-and-run", action="store_true")
+    parser.add_argument("--confirm-reset", action="store_true")
+    parser.add_argument("--lookback-days", type=positive_int)
     args = parser.parse_args()
+    if args.reset_and_run and not args.confirm_reset:
+        parser.error("--reset-and-run requires --confirm-reset")
+    if args.reset_and_run and (args.loop or args.healthcheck or args.once):
+        parser.error("--reset-and-run cannot be combined with --once, --loop, or --healthcheck")
     config = Config.from_env()
-    if args.healthcheck:
+    if args.lookback_days is not None:
+        config = replace(config, lookback_days=args.lookback_days)
+    if args.reset_and_run:
+        report = reset_and_run(config)
+    elif args.healthcheck:
         return healthcheck(config)
-    if args.once or not args.loop:
+    elif args.once or not args.loop:
         report = run_once(config)
-        print(json.dumps({"success": report["success"], "paper_count": report["paper_count"], "errors": report["errors"]}))
-        return 0 if report["success"] else 1
-    if config.run_on_startup:
-        run_once(config)
-    while True:
-        time.sleep(config.check_interval_hours * 3600)
-        run_once(config)
+    else:
+        if config.run_on_startup:
+            run_once(config)
+        while True:
+            time.sleep(config.check_interval_hours * 3600)
+            run_once(config)
+    print(json.dumps({"success": report["success"], "paper_count": report["paper_count"], "errors": report["errors"]}))
+    return 0 if report["success"] else 1
 
 
 if __name__ == "__main__":
