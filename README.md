@@ -24,7 +24,7 @@ The latest HTML and JSON report stays on the named `papers-data` volume because 
 
 The default fan-out is 9 topics × 7 sources × 8 results, or at most 504 raw result envelopes per weekly run. Deduplication means MongoDB stores only unique papers. A realistic planning range is roughly 1–5 MB/week for 50–200 new papers including abstracts, metadata, scores, and indexes. A conservative upper budget is 10–25 MB/week if most of the 504 results are unique or abstracts are unusually large. Run diagnostics are negligible; retaining PDFs would add several MB per paper, which is why it is disabled by default.
 
-Paper metadata is retained indefinitely unless explicitly pruned. The first run's `LOOKBACK_DAYS` controls the initial window; subsequent runs store only records newer than `last_success_at`.
+Paper metadata is retained indefinitely unless explicitly pruned. The latest report shows at most 100 retained papers, re-ranked and sorted by current relevance score; `paper_count` is displayed records and `new_paper_count` is records found during the current run. The first run's `LOOKBACK_DAYS` controls the initial window; subsequent runs store only records newer than `last_success_at`.
 
 The default schedule is once immediately and then weekly. `last_success_at` advances only after all topic searches return successfully, so a transient source failure causes the next run to retry the same cutoff instead of silently skipping a window.
 
