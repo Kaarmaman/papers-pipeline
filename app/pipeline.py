@@ -358,10 +358,11 @@ def link_for(paper: dict[str, Any]) -> str:
 
 
 def notify_discord(config: Config, report: dict[str, Any]) -> None:
-    if not config.discord_webhook_url or not report.get("success") or not report.get("paper_count"):
+    new_paper_count = report["new_paper_count"]
+    if not config.discord_webhook_url or not report.get("success") or not new_paper_count:
         return
     lines = [
-        f"**Interesting papers to read: {report['paper_count']} new paper(s)**",
+        f"**Interesting papers to read: {new_paper_count} new paper(s)**",
         f"Checked: {report.get('checked_at', 'unknown')}",
     ]
     for index, item in enumerate(report.get("top5", [])[:5], start=1):
@@ -384,7 +385,7 @@ def notify_discord(config: Config, report: dict[str, Any]) -> None:
     try:
         with urllib.request.urlopen(request, timeout=15):
             pass
-        print(json.dumps({"event": "discord_notification_sent", "papers": report["paper_count"]}), flush=True)
+        print(json.dumps({"event": "discord_notification_sent", "papers": new_paper_count}), flush=True)
     except (OSError, urllib.error.URLError, ValueError) as exc:
         print(json.dumps({"event": "discord_notification_failed", "error": type(exc).__name__}), flush=True)
 
@@ -428,10 +429,10 @@ def render_html(report: dict[str, Any]) -> str:
     return """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Interesting papers to read</title>
 <style>
 :root{{color-scheme:light dark;--bg:#10141b;--panel:#171d27;--muted:#9ba7b7;--text:#edf2f7;--accent:#7dd3fc;--line:#2a3545}}*{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--text);font:16px/1.55 system-ui,-apple-system,Segoe UI,sans-serif}}main{{max-width:1100px;margin:0 auto;padding:32px 20px 60px}}h1{{font-size:clamp(2rem,5vw,3.5rem);line-height:1.05;margin:0 0 12px}}h2{{font-size:1.12rem;line-height:1.3;margin:0 0 6px}}a{{color:var(--accent)}}.lede,.meta{{color:var(--muted)}}.paper,.analysis{{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px;margin:14px 0}}.paper{{display:grid;grid-template-columns:74px 1fr;gap:16px}}.score{{font-size:2rem;font-weight:750;color:var(--accent)}}.score small{{display:block;font-size:.72rem;color:var(--muted)}}.meta{{font-size:.86rem;margin:0 0 9px}}.tags{{color:var(--muted);font-size:.82rem}}.analysis h2 span{{float:right;color:var(--accent);font-size:.9rem}}.analysis dl{{display:grid;grid-template-columns:minmax(130px,18%) 1fr;gap:8px 18px}}.analysis dt{{font-weight:700;color:var(--accent)}}.analysis dd{{margin:0}}.section-title{{margin-top:42px;border-bottom:1px solid var(--line);padding-bottom:8px}}details{{margin-top:24px;color:var(--muted)}}pre{{white-space:pre-wrap}}footer{{color:var(--muted);font-size:.82rem;margin-top:32px}}@media(max-width:650px){{.paper{{grid-template-columns:1fr}}.analysis dl{{display:block}}.analysis dt{{margin-top:12px}}}}
-</style></head><body><main><h1>Interesting papers to read</h1><p class=lede>New since {cutoff}: {count} papers · checked {checked} · ranking is a reproducible relevance heuristic, not investment advice.</p>
-<h2 class=section-title>New discoveries</h2>{papers}<h2 class=section-title>Top five analysis</h2>{analyses}{errors}<footer>Analysis mode: {mode}. Sources and paper links are retained in the JSON report beside this page.</footer></main></body></html>""".format(
-        cutoff=esc(report.get("cutoff_at")), count=report.get("paper_count", 0), checked=esc(report.get("checked_at")),
-        papers="".join(rows) or "<p class=lede>No new dated papers passed the cutoff on this run.</p>",
+</style></head><body><main><h1>Interesting papers to read</h1><p class=lede>{new_count} new since {cutoff}; showing {count} ranked papers · checked {checked} · ranking is a reproducible relevance heuristic, not investment advice.</p>
+<h2 class=section-title>Interesting papers</h2>{papers}<h2 class=section-title>Top five analysis</h2>{analyses}{errors}<footer>Analysis mode: {mode}. Sources and paper links are retained in the JSON report beside this page.</footer></main></body></html>""".format(
+        cutoff=esc(report.get("cutoff_at")), count=report.get("paper_count", 0), new_count=report["new_paper_count"], checked=esc(report.get("checked_at")),
+        papers="".join(rows) or "<p class=lede>No stored papers are available.</p>",
         analyses="".join(analyses) or "<p class=lede>No top-five analysis was generated.</p>", errors=error_block,
         mode=esc(report.get("analysis_mode", "metadata-only")),
     )
@@ -488,13 +489,13 @@ def _run_once(config: Config, store: MongoStore) -> dict[str, Any]:
             errors[topic["name"]] = error
         search_results.extend(SearchResult(topic["name"], paper) for paper in papers)
         print(json.dumps({"event": "topic_search", "topic": topic["name"], "results": len(papers), "ok": error is None}), flush=True)
-    papers, rejection_counts = merge_papers(search_results, cutoff, started_at)
-    print(json.dumps({"event": "filter_summary", "cutoff": iso(cutoff), "accepted": len(papers), **rejection_counts}), flush=True)
-    papers = sort_papers(papers, started_at)
-    for paper in papers:
+    new_papers, rejection_counts = merge_papers(search_results, cutoff, started_at)
+    print(json.dumps({"event": "filter_summary", "cutoff": iso(cutoff), "accepted": len(new_papers), **rejection_counts}), flush=True)
+    new_papers = sort_papers(new_papers, started_at)
+    for paper in new_papers:
         paper["fulltext_available"] = False
     top5 = []
-    for paper in papers[:5]:
+    for paper in new_papers[:5]:
         fulltext = read_fulltext(config, paper)
         paper["fulltext_available"] = bool(fulltext)
         analysis = llm_analysis(config, paper, fulltext)
@@ -503,14 +504,15 @@ def _run_once(config: Config, store: MongoStore) -> dict[str, Any]:
     cleanup_downloads(config)
     success = len(errors) == 0
     finished_at = now_utc()
-    if papers:
-        store.save_papers(papers, iso(finished_at))
+    store.save_papers(new_papers, iso(finished_at))
+    papers = sort_papers(store.list_papers(), finished_at)[:100]
     if success:
         store.set_state("last_success_at", iso(finished_at))
     report = {
         "checked_at": iso(finished_at),
         "cutoff_at": iso(cutoff),
         "paper_count": len(papers),
+        "new_paper_count": len(new_papers),
         "excluded_missing_date": rejection_counts["missing_date"],
         "excluded_before_cutoff": rejection_counts["before_cutoff"],
         "excluded_future_date": rejection_counts["future_date"],
@@ -523,9 +525,9 @@ def _run_once(config: Config, store: MongoStore) -> dict[str, Any]:
         "retrieval": {"sources": config.search_sources.split(","), "max_results_per_source": config.max_results_per_source},
     }
     write_reports(config, report)
-    store.save_run(iso(started_at), iso(finished_at), iso(cutoff), success, len(papers), errors)
+    store.save_run(iso(started_at), iso(finished_at), iso(cutoff), success, len(new_papers), errors)
     notify_discord(config, report)
-    print(json.dumps({"event": "run_finished", "at": iso(finished_at), "papers": len(papers), "success": success}), flush=True)
+    print(json.dumps({"event": "run_finished", "at": iso(finished_at), "papers": len(new_papers), "displayed": len(papers), "success": success}), flush=True)
     return report
 
 

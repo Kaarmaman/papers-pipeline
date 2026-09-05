@@ -84,6 +84,18 @@ class MongoStore:
                 upsert=True,
             )
 
+    def list_papers(self) -> list[dict[str, Any]]:
+        papers = []
+        for document in self.papers.find({}):
+            paper = dict(document)
+            paper["key"] = str(paper.pop("_id"))
+            for field in ("first_seen_at", "last_seen_at"):
+                value = paper.get(field)
+                if isinstance(value, datetime):
+                    paper[field] = value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+            papers.append(paper)
+        return papers
+
     def save_run(
         self,
         started: str,

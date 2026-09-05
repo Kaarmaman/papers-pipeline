@@ -60,7 +60,8 @@ class PipelineTests(unittest.TestCase):
 
         report = {
             "success": True,
-            "paper_count": 1,
+            "paper_count": 100,
+            "new_paper_count": 1,
             "checked_at": "2026-08-18T00:00:00Z",
             "top5": [{"paper": {"title": "A paper", "relevance_score": 91, "doi": "10/example"}}],
         }
@@ -69,6 +70,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(captured["url"], "https://discord.example/webhook")
         self.assertEqual(captured["timeout"], 15)
         self.assertIn("A paper", captured["payload"]["content"])
+        self.assertIn("1 new paper", captured["payload"]["content"])
         self.assertIn("http://192.168.1.26:8099/", captured["payload"]["content"])
         self.assertEqual(captured["payload"]["allowed_mentions"], {"parse": []})
 
@@ -145,6 +147,9 @@ class PipelineTests(unittest.TestCase):
                 def save_papers(self, papers, _seen_at):
                     self.saved.extend(papers)
 
+                def list_papers(self):
+                    return list(self.saved)
+
                 def save_run(self, *args):
                     self.runs.append(args)
 
@@ -158,6 +163,56 @@ class PipelineTests(unittest.TestCase):
             self.assertTrue((Path(directory) / "reports" / "latest.html").exists())
             self.assertTrue((Path(directory) / "reports" / "latest.json").exists())
             self.assertEqual(len(FakeStore.instances[0].saved), 1)
+
+    def test_run_once_reports_archived_papers_ranked_and_capped(self):
+        with TemporaryDirectory() as directory:
+            config = Config(
+                data_dir=Path(directory), search_command="unused", search_sources="crossref",
+                max_results_per_source=1, search_timeout_seconds=30, lookback_days=30,
+                check_interval_hours=168, run_on_startup=True, fetch_fulltext=False,
+                max_fulltext_chars=4000, llm_base_url="https://example.invalid/v1",
+                llm_api_key="", llm_model="test", llm_timeout_seconds=30,
+            )
+            archived = [canonicalize({
+                "title": f"Archived paper {index}", "published_date": "2020-01-01",
+            }, "archive") for index in range(101)]
+            archived[0] = canonicalize({
+                "title": "Asset allocation portfolio research", "published_date": "2020-01-01",
+            }, "asset allocation")
+
+            class FakeStore:
+                def __init__(self, _config):
+                    self.papers = list(archived)
+
+                def get_state(self, _key):
+                    return None
+
+                def set_state(self, _key, _value):
+                    pass
+
+                def save_papers(self, papers, _seen_at):
+                    self.papers.extend(papers)
+
+                def list_papers(self):
+                    return list(self.papers)
+
+                def save_run(self, *args):
+                    pass
+
+                def close(self):
+                    pass
+
+            with patch("app.pipeline.Store", FakeStore), patch("app.pipeline.run_search", return_value=([], None)):
+                report = run_once(config)
+
+            self.assertEqual(report["new_paper_count"], 0)
+            self.assertEqual(report["paper_count"], 100)
+            self.assertEqual(len(report["papers"]), 100)
+            self.assertEqual(report["papers"][0]["title"], "Asset allocation portfolio research")
+            self.assertEqual(
+                report["papers"],
+                sorted(report["papers"], key=lambda paper: -paper["relevance_score"]),
+            )
 
     def test_reset_and_run_clears_reports_before_fresh_run(self):
         with TemporaryDirectory() as directory:
@@ -238,6 +293,9 @@ class PipelineTests(unittest.TestCase):
             def find_one(self, query, _projection=None):
                 return self.documents.get(query["_id"])
 
+            def find(self, _query):
+                return list(self.documents.values())
+
             def update_one(self, query, update, upsert=False):
                 document = self.documents.setdefault(query["_id"], {"_id": query["_id"]})
                 document.update(update.get("$set", {}))
@@ -290,6 +348,10 @@ class PipelineTests(unittest.TestCase):
             store = MongoStore(config)
             store.set_state("last_success_at", "2026-08-18T00:00:00Z")
             store.save_papers([paper], "2026-08-18T01:00:00Z")
+            stored = store.list_papers()
+            self.assertEqual(stored[0]["key"], paper["key"])
+            self.assertIsInstance(stored[0]["last_seen_at"], str)
+            self.assertNotIn("_id", stored[0])
             store.save_run("2026-08-18T01:00:00Z", "2026-08-18T01:01:00Z", "2026-08-17T00:00:00Z", True, 1, {})
             self.assertEqual(store.get_state("last_success_at"), "2026-08-18T00:00:00Z")
             self.assertIn("doi:10/example", store.papers.documents)
