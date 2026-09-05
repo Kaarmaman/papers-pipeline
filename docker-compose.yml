@@ -2,7 +2,6 @@ services:
   papers-worker:
     build:
       context: .
-    image: interesting-papers:0.1.0
     restart: unless-stopped
     command: ["python", "-m", "app.pipeline", "--loop"]
     environment:
@@ -46,7 +45,6 @@ services:
   papers-web:
     build:
       context: .
-    image: interesting-papers:0.1.0
     restart: unless-stopped
     command: ["python", "-m", "app.web"]
     environment:

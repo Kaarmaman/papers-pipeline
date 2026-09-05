@@ -40,7 +40,7 @@ The score is intentionally inspectable: priority-topic match (45), recency (20),
 6. To receive Discord notifications when a successful run finds new papers, set `DISCORD_WEBHOOK_URL` and `PAPER_REPORT_URL` to the externally reachable report URL. Notifications include the top five titles and scores; the webhook is read at runtime and never stored in MongoDB or the report. No notification is sent for a successful run with zero new papers.
 7. Deploy and wait for `papers-worker` to complete its first run. Open `http://<docker-host>:8099/` and confirm the web container is healthy. The first run may take several minutes because it fans out across multiple public providers and may try public full text for the top five.
 
-If Portainer is using the Web editor instead of Git, the stack still needs the image built from this repository. Build/push `interesting-papers:0.1.0` to a registry reachable by the Docker endpoint, then change both services from `build:` to that image and set `pull_policy: if_not_present` or the Portainer equivalent.
+If Portainer is using the Web editor instead of Git, the stack has no local build context. Build/push `interesting-papers:0.1.0` to a registry reachable by the Docker endpoint, then change both services from `build:` to a fully qualified `image:` and set `pull_policy: if_not_present` or the Portainer equivalent.
 
 ## Local validation
 
